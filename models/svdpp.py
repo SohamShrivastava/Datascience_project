@@ -1,15 +1,28 @@
 import numpy as np
 from collections import defaultdict
+from tqdm import tqdm
 
 
 class SVDPP:
-    def __init__(self, n_users, n_items, n_factors=20, lr=0.01, reg=0.02, epochs=5):
+    def __init__(
+        self,
+        n_users,
+        n_items,
+        n_factors=20,
+        lr=0.01,
+        reg=0.02,
+        epochs=5,
+        max_implicit_items=None,
+        show_progress=True,
+    ):
         self.n_users = n_users
         self.n_items = n_items
         self.n_factors = n_factors
         self.lr = lr
         self.reg = reg
         self.epochs = epochs
+        self.max_implicit_items = max_implicit_items
+        self.show_progress = show_progress
 
         self.U = np.random.normal(scale=1./n_factors, size=(n_users, n_factors))
         self.V = np.random.normal(scale=1./n_factors, size=(n_items, n_factors))
@@ -32,16 +45,30 @@ class SVDPP:
         for epoch in range(self.epochs):
             total_loss = 0
 
-            for row in df.itertuples():
+            row_iter = df.itertuples()
+            if self.show_progress:
+                row_iter = tqdm(
+                    row_iter,
+                    total=len(df),
+                    desc=f"SVD++ Epoch {epoch+1}/{self.epochs}",
+                    unit="row",
+                    leave=False,
+                )
+
+            for row in row_iter:
                 u = row.user
                 i = row.item
                 r = row.rating
 
                 items_u = self.user_items[u]
-                sqrt_Nu = np.sqrt(len(items_u)) if items_u else 1
+                implicit_items = items_u
+                if self.max_implicit_items is not None and len(implicit_items) > self.max_implicit_items:
+                    implicit_items = implicit_items[:self.max_implicit_items]
+
+                sqrt_Nu = np.sqrt(len(implicit_items)) if implicit_items else 1
 
                 # implicit sum
-                y_sum = np.sum(self.Y[items_u], axis=0) / sqrt_Nu if items_u else 0
+                y_sum = np.sum(self.Y[implicit_items], axis=0) / sqrt_Nu if implicit_items else 0
 
                 pred = (self.global_mean +
                         self.user_bias[u] +
@@ -59,7 +86,7 @@ class SVDPP:
                 self.V[i] += self.lr * (err * (self.U[u] + y_sum) - self.reg * self.V[i])
 
                 # update implicit factors
-                for j in items_u:
+                for j in implicit_items:
                     self.Y[j] += self.lr * (err * self.V[i] / sqrt_Nu - self.reg * self.Y[j])
 
                 total_loss += err**2

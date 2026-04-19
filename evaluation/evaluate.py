@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
+import random
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 
 from evaluation.metrics import (
     rmse,
@@ -97,12 +99,56 @@ def _score_item(model, user, item):
     raise AttributeError("Model must define predict() or predict_bias().")
 
 
-def evaluate_ranking_model(model, train_df, test_df, pre, movies_df, k=10, rating_threshold=4.0):
+def _fast_diversity_at_k(recommended, genre_map, k=10):
+    recommended_k = list(recommended[:k])
+
+    if len(recommended_k) < 2:
+        return 0.0
+
+    pair_distances = []
+    n = len(recommended_k)
+    for i in range(n):
+        genres_a = genre_map.get(recommended_k[i], set())
+        for j in range(i + 1, n):
+            genres_b = genre_map.get(recommended_k[j], set())
+            union = genres_a | genres_b
+            if not union:
+                pair_distances.append(0.0)
+                continue
+
+            similarity = len(genres_a & genres_b) / len(union)
+            pair_distances.append(1.0 - similarity)
+
+    return float(np.mean(pair_distances)) if pair_distances else 0.0
+
+
+def evaluate_ranking_model(
+    model,
+    train_df,
+    test_df,
+    pre,
+    movies_df,
+    k=10,
+    rating_threshold=4.0,
+    candidate_sample_size=100,
+    max_users=None,
+    random_state=42,
+    show_progress=True,
+):
     """
     Evaluate top-k recommendation quality using held-out positive interactions.
     """
+    rng = random.Random(random_state)
     popularity_map = train_df.groupby('movieId').size().to_dict()
+    # Build once for all users in this model evaluation.
+    genre_map = {
+        row.movieId: set(str(row.genres).split("|"))
+        for row in movies_df.itertuples()
+    }
+    item_to_movie = np.asarray(pre.movie_encoder.classes_)
     users = sorted(test_df['user'].unique())
+    if max_users is not None:
+        users = users[:max_users]
 
     precision_scores = []
     recall_scores = []
@@ -112,12 +158,26 @@ def evaluate_ranking_model(model, train_df, test_df, pre, movies_df, k=10, ratin
 
     n_items = pre.get_num_users_items(train_df)[1]
 
-    for user in users:
+    user_iterator = users
+    if show_progress:
+        user_iterator = tqdm(
+            users,
+            total=len(users),
+            desc=f"Evaluating {model.__class__.__name__}",
+            unit="user",
+        )
+
+    for user in user_iterator:
         train_items = set(train_df.loc[train_df['user'] == user, 'item'].tolist())
         user_test = test_df[test_df['user'] == user]
         relevant_items = user_test.loc[user_test['rating'] >= rating_threshold, 'item'].tolist()
 
-        candidate_items = [item for item in range(n_items) if item not in train_items]
+        # candidate_items = [item for item in range(n_items) if item not in train_items]
+        all_items = set(range(n_items)) - train_items
+        sample_size = min(candidate_sample_size, len(all_items))
+        candidate_items = rng.sample(list(all_items), sample_size) if sample_size > 0 else []
+        # Always include relevant items
+        candidate_items = list(set(candidate_items) | set(relevant_items))
         scored_items = []
 
         for item in candidate_items:
@@ -131,14 +191,14 @@ def evaluate_ranking_model(model, train_df, test_df, pre, movies_df, k=10, ratin
         scored_items.sort(key=lambda x: x[1], reverse=True)
         recommended_items = [item for item, _ in scored_items[:k]]
 
-        recommended_movie_ids = pre.movie_encoder.inverse_transform(recommended_items) if recommended_items else []
-        relevant_movie_ids = pre.movie_encoder.inverse_transform(relevant_items) if relevant_items else []
+        recommended_movie_ids = item_to_movie[recommended_items].tolist() if recommended_items else []
+        relevant_movie_ids = item_to_movie[relevant_items].tolist() if relevant_items else []
 
         precision_scores.append(precision_at_k(recommended_movie_ids, relevant_movie_ids, k=k))
         recall_scores.append(recall_at_k(recommended_movie_ids, relevant_movie_ids, k=k))
-        diversity_scores.append(diversity_at_k(recommended_movie_ids, movies_df, k=k))
+        diversity_scores.append(_fast_diversity_at_k(recommended_movie_ids, genre_map, k=k))
         novelty_scores.append(novelty_at_k(recommended_movie_ids, popularity_map, k=k))
-        serendipity_scores.append(serendipity_proxy_at_k(recommended_movie_ids, movies_df, popularity_map, k=k))
+        serendipity_scores.append(float((diversity_scores[-1] + novelty_scores[-1]) / 2.0))
 
     return pd.DataFrame([
         {

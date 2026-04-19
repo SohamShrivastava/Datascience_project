@@ -62,6 +62,6 @@ class HybridRecommender:
         genre_score = np.mean(sims) if sims else 0
 
         # final score
-        genre_score_scaled = genre_score * 5  # bring to rating scale
+        genre_score_scaled = 0.5 + genre_score * 4.5  # bring to rating scale
 
         return self.alpha * mf_score + (1 - self.alpha) * genre_score_scaled

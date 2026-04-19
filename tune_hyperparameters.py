@@ -3,6 +3,7 @@ import itertools
 
 import pandas as pd
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 
 from evaluation.metrics import rmse, mae
 from models.hybrid import HybridRecommender
@@ -90,7 +91,7 @@ def main():
     mf_param_names = list(mf_grid.keys())
     mf_combinations = list(itertools.product(*mf_grid.values()))
 
-    for trial_idx, values in enumerate(mf_combinations, start=1):
+    for trial_idx, values in enumerate(tqdm(mf_combinations, desc="MF tuning", unit="trial"), start=1):
         params = dict(zip(mf_param_names, values))
         print(f"\n[MF Trial {trial_idx}/{len(mf_combinations)}] params={params}")
         result = evaluate_mf(train_df, valid_df, pre, params)
@@ -120,7 +121,7 @@ def main():
     best_mf.fit(train_df)
 
     hybrid_results = []
-    for alpha in [0.1, 0.3, 0.5, 0.7, 0.9]:
+    for alpha in tqdm([0.1, 0.3, 0.5, 0.7, 0.9], desc="Hybrid alpha", unit="alpha"):
         hybrid_results.append(evaluate_hybrid(valid_df, best_mf, movies, user_history, alpha, pre))
 
     hybrid_results_df = pd.DataFrame(hybrid_results)

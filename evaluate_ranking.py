@@ -1,3 +1,6 @@
+import argparse
+import time
+
 import pandas as pd
 
 from evaluation.evaluate import evaluate_ranking_model
@@ -9,36 +12,124 @@ from src.preprocessing import Preprocessor
 
 
 def main():
-    df = load_and_merge("./data/movies.csv", "./data/ratings.csv")
+    parser = argparse.ArgumentParser(description="Evaluate ranking metrics for recommendation models.")
+    parser.add_argument("--movies", default="./data/movies.csv")
+    parser.add_argument("--ratings", default="./data/ratings.csv")
+    parser.add_argument("--output", default="./outputs/ranking_results.csv")
+    parser.add_argument("--k", type=int, default=10)
+    parser.add_argument("--test-frac", type=float, default=0.2)
+    parser.add_argument("--train-frac", type=float, default=1.0, help="Fraction of train split used for fitting models.")
+    parser.add_argument("--candidate-sample-size", type=int, default=100)
+    parser.add_argument("--max-users", type=int, default=None)
+    parser.add_argument("--mf-epochs", type=int, default=5)
+    parser.add_argument("--svdpp-epochs", type=int, default=2)
+    parser.add_argument(
+        "--svdpp-max-implicit-items",
+        type=int,
+        default=None,
+        help="Cap implicit history size per user in SVD++ to speed up training.",
+    )
+    parser.add_argument("--skip-svdpp", action="store_true", help="Skip SVD++ model (useful for fast validation).")
+    parser.add_argument("--quick", action="store_true", help="Fast sanity-check mode.")
+    args = parser.parse_args()
+
+    if args.quick:
+        # Override heavy settings for quick validation.
+        args.max_users = 10000 if args.max_users is None else args.max_users
+        args.candidate_sample_size = min(args.candidate_sample_size, 30)
+        args.mf_epochs = min(args.mf_epochs, 1)
+        args.svdpp_epochs = min(args.svdpp_epochs, 1)
+        args.train_frac = min(args.train_frac, 0.25)
+        args.svdpp_max_implicit_items = 50 if args.svdpp_max_implicit_items is None else args.svdpp_max_implicit_items
+        args.skip_svdpp = True
+
+    df = load_and_merge(args.movies, args.ratings)
 
     pre = Preprocessor()
     df = pre.encode_ids(df)
 
-    train_df = df.sample(frac=0.8, random_state=42)
+    train_df = df.sample(frac=1.0 - args.test_frac, random_state=42)
     test_df = df.drop(train_df.index)
+    if args.train_frac < 1.0:
+        train_df = train_df.sample(frac=args.train_frac, random_state=42)
 
-    movies_df = pd.read_csv("./data/movies.csv")
-    n_users, n_items = pre.get_num_users_items(df)
-
-    baseline = BaselineModel()
-    baseline.fit(train_df)
-
-    mf = MatrixFactorization(n_users, n_items, epochs=5, decay_rate=0.01)
-    mf.fit(train_df)
-
-    svdpp = SVDPP(n_users, n_items, epochs=2)
-    svdpp.fit(train_df)
-
-    ranking_results = pd.concat(
-        [
-            evaluate_ranking_model(baseline, train_df, test_df, pre, movies_df, k=10),
-            evaluate_ranking_model(mf, train_df, test_df, pre, movies_df, k=10),
-            evaluate_ranking_model(svdpp, train_df, test_df, pre, movies_df, k=10),
-        ],
-        ignore_index=True,
+    print(
+        f"Train rows: {len(train_df)}, Test rows: {len(test_df)}, "
+        f"Max users eval: {args.max_users if args.max_users is not None else 'all'}"
     )
 
-    ranking_results.to_csv("./outputs/ranking_results.csv", index=False)
+    movies_df = pd.read_csv(args.movies)
+    n_users, n_items = pre.get_num_users_items(df)
+
+    ranking_frames = []
+
+    baseline = BaselineModel()
+    t0 = time.perf_counter()
+    print("Starting Baseline fit...")
+    baseline.fit(train_df)
+    print(f"Baseline fit done in {time.perf_counter() - t0:.2f}s")
+    ranking_frames.append(
+        evaluate_ranking_model(
+            baseline,
+            train_df,
+            test_df,
+            pre,
+            movies_df,
+            k=args.k,
+            candidate_sample_size=args.candidate_sample_size,
+            max_users=args.max_users,
+            random_state=42,
+        )
+    )
+
+    mf = MatrixFactorization(n_users, n_items, epochs=args.mf_epochs, decay_rate=0.01)
+    t0 = time.perf_counter()
+    print("Starting MF fit...")
+    mf.fit(train_df)
+    print(f"MF fit done in {time.perf_counter() - t0:.2f}s")
+    ranking_frames.append(
+        evaluate_ranking_model(
+            mf,
+            train_df,
+            test_df,
+            pre,
+            movies_df,
+            k=args.k,
+            candidate_sample_size=args.candidate_sample_size,
+            max_users=args.max_users,
+            random_state=42,
+        )
+    )
+
+    if not args.skip_svdpp:
+        svdpp = SVDPP(
+            n_users,
+            n_items,
+            epochs=args.svdpp_epochs,
+            max_implicit_items=args.svdpp_max_implicit_items,
+            show_progress=True,
+        )
+        t0 = time.perf_counter()
+        print("Starting SVD++ fit... (this is the slowest stage)")
+        svdpp.fit(train_df)
+        print(f"SVD++ fit done in {time.perf_counter() - t0:.2f}s")
+        ranking_frames.append(
+            evaluate_ranking_model(
+                svdpp,
+                train_df,
+                test_df,
+                pre,
+                movies_df,
+                k=args.k,
+                candidate_sample_size=args.candidate_sample_size,
+                max_users=args.max_users,
+                random_state=42,
+            )
+        )
+
+    ranking_results = pd.concat(ranking_frames, ignore_index=True)
+
+    ranking_results.to_csv(args.output, index=False)
     print(ranking_results)
 
 
