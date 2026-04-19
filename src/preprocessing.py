@@ -8,7 +8,21 @@ class Preprocessor:
         self.user_encoder = LabelEncoder()
         self.movie_encoder = LabelEncoder()
 
+    def fit_ids(self, df):
+        self.user_encoder.fit(df['userId'])
+        self.movie_encoder.fit(df['movieId'])
+
+        return self
+
+    def transform_ids(self, df):
+        df = df.copy()
+        df['user'] = self.user_encoder.transform(df['userId'])
+        df['item'] = self.movie_encoder.transform(df['movieId'])
+
+        return df
+
     def encode_ids(self, df):
+        df = df.copy()
         df['user'] = self.user_encoder.fit_transform(df['userId'])
         df['item'] = self.movie_encoder.fit_transform(df['movieId'])
 
@@ -24,4 +38,11 @@ class Preprocessor:
         return user_item
 
     def get_num_users_items(self, df):
-        return df['user'].nunique(), df['item'].nunique()
+        if df.empty:
+            return 0, 0
+
+        # Encoded IDs can be sparse within a split, so use max index + 1.
+        n_users = int(df['user'].max()) + 1
+        n_items = int(df['item'].max()) + 1
+
+        return n_users, n_items
