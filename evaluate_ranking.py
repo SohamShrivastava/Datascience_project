@@ -9,7 +9,8 @@ from models.matrix_factorization import MatrixFactorization
 from models.svdpp import SVDPP
 from src.data_loader import load_and_merge
 from src.preprocessing import Preprocessor
-
+from models.knn import KNNModel
+from models.hybrid import HybridRecommender
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate ranking metrics for recommendation models.")
@@ -100,6 +101,42 @@ def main():
             random_state=42,
         )
     )
+    # Build user history for hybrid
+    user_history = {}
+    for row in train_df.itertuples():
+        user_history.setdefault(row.user, []).append(row.movieId)
+
+    hybrid = HybridRecommender(mf, movies_df, alpha=0.9, preprocessor=pre)
+
+    # Wrap predict to match evaluate_ranking_model signature
+    class HybridWrapper:
+        def __init__(self, hybrid_model, user_history):
+            self.hybrid = hybrid_model
+            self.user_history = user_history
+            self.__class__.__name__ = "HybridModel"
+
+        def predict(self, user, item):
+            history = self.user_history.get(user, [])
+            return self.hybrid.predict(user, item, history)
+
+    hybrid_wrapper = HybridWrapper(hybrid, user_history)
+
+    t0 = time.perf_counter()
+    print("Starting Hybrid evaluation...")
+    ranking_frames.append(
+        evaluate_ranking_model(
+            hybrid_wrapper,
+            train_df,
+            test_df,
+            pre,
+            movies_df,
+            k=args.k,
+            candidate_sample_size=args.candidate_sample_size,
+            max_users=args.max_users,
+            random_state=42,
+        )
+    )
+    print(f"Hybrid evaluation done in {time.perf_counter() - t0:.2f}s")
 
     if not args.skip_svdpp:
         svdpp = SVDPP(
@@ -126,7 +163,27 @@ def main():
                 random_state=42,
             )
         )
-
+    
+    knn = KNNModel(k=20, min_common=3)
+    t0 = time.perf_counter()
+    print("Starting KNN fit...")
+    knn.fit(train_df)
+    print(f"KNN fit done in {time.perf_counter() - t0:.2f}s")
+    ranking_frames.append(
+        evaluate_ranking_model(
+            knn,
+            train_df,
+            test_df,
+            pre,
+            movies_df,
+            k=args.k,
+            candidate_sample_size=args.candidate_sample_size,
+            max_users=args.max_users,
+            random_state=42,
+            candidate_provider=knn.get_neighbor_items,  # ← KEY FIX
+        )
+    )
+    
     ranking_results = pd.concat(ranking_frames, ignore_index=True)
 
     ranking_results.to_csv(args.output, index=False)

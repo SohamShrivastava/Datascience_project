@@ -1,2 +1,4 @@
 __pycache__/
 *.py[cod]
+*.tex
+outputs/saved_models/*.pkl

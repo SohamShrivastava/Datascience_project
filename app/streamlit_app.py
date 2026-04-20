@@ -17,20 +17,20 @@ st.set_page_config(layout="wide")
 # ---------------- LOAD ----------------
 @st.cache_resource
 def load_models():
-    with open("../outputs/saved_models/mf.pkl", "rb") as f:
+    with open("outputs/saved_models/mf.pkl", "rb") as f:
         mf = pickle.load(f)
 
-    with open("../outputs/saved_models/preprocessor.pkl", "rb") as f:
+    with open("outputs/saved_models/preprocessor.pkl", "rb") as f:
         pre = pickle.load(f)
 
-    with open("../outputs/saved_models/movies.pkl", "rb") as f:
+    with open("outputs/saved_models/movies.pkl", "rb") as f:
         movies = pickle.load(f)
 
     return mf, pre, movies
 
 
 mf, pre, movies = load_models()
-ratings = pd.read_csv("../data/ratings.csv")
+ratings = pd.read_csv("data/ratings.csv")
 
 df = pd.merge(ratings, movies, on="movieId")
 
@@ -290,7 +290,33 @@ elif page == "Model Comparison":
     st.header("📈 Model Performance")
 
     try:
-        results = pd.read_csv("../outputs/results.csv")
+        # RMSE/MAE table
+        results = pd.read_csv("outputs/results.csv")
+        st.subheader("Rating Prediction (RMSE / MAE)")
         st.dataframe(results)
-    except:
-        st.warning("Run evaluation first to generate results.csv")
+
+        # Ranking metrics chart
+        ranking = pd.read_csv("outputs/ranking_results.csv")
+        st.subheader("Ranking Metrics")
+        
+        import plotly.express as px
+        fig = px.bar(
+            ranking,
+            x="model",
+            y=["Precision@10", "Recall@10"],
+            barmode="group",
+            title="Precision & Recall @10"
+        )
+        st.plotly_chart(fig)
+
+        fig2 = px.bar(
+            ranking,
+            x="model", 
+            y=["Diversity@10", "Novelty@10"],
+            barmode="group",
+            title="Diversity & Novelty @10"
+        )
+        st.plotly_chart(fig2)
+
+    except FileNotFoundError:
+        st.warning("Run evaluate_ranking.py first")

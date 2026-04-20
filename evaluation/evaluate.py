@@ -18,7 +18,7 @@ from models.matrix_factorization import MatrixFactorization
 from models.svdpp import SVDPP
 
 
-def evaluate_models(df, pre):
+def evaluate_models(df, pre, movies_df_param):
     # split
     train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
 
@@ -82,11 +82,54 @@ def evaluate_models(df, pre):
     })
     print("Finished SVD++", flush=True)
 
+
+    # ---------- KNN ----------
+    from models.knn import KNNModel
+    knn = KNNModel(k=20, min_common=3)
+    knn.fit(train_df)
+
+    y_true, y_pred = [], []
+    for row in test_df.itertuples():
+        y_true.append(row.rating)
+        y_pred.append(knn.predict(row.user, row.item))
+
+    results.append({
+        "model": "KNN",
+        "RMSE": rmse(y_true, y_pred),
+        "MAE": mae(y_true, y_pred)
+    })
+
+    # ---------- HYBRID ----------
+    from models.hybrid import HybridRecommender
+    user_history = {}
+    for row in train_df.itertuples():
+        user_history.setdefault(row.user, []).append(row.movieId)
+
+    hybrid = HybridRecommender(mf, movies_df_param, alpha=0.9, preprocessor=pre)
+
+    y_true, y_pred = [], []
+    for row in test_df.itertuples():
+        history = user_history.get(row.user, [])
+        movieId = pre.movie_encoder.inverse_transform([row.item])[0]
+        y_true.append(row.rating)
+        y_pred.append(hybrid.predict(row.user, movieId, history))
+
+    results.append({
+        "model": "Hybrid",
+        "RMSE": rmse(y_true, y_pred),
+        "MAE": mae(y_true, y_pred)
+    })
+
+
+
+
     # save results
     results_df = pd.DataFrame(results)
     results_df.to_csv("./outputs/results.csv", index=False)
 
     return results_df
+
+
 
 
 def _score_item(model, user, item):
@@ -134,6 +177,7 @@ def evaluate_ranking_model(
     max_users=None,
     random_state=42,
     show_progress=True,
+    candidate_provider=None,
 ):
     """
     Evaluate top-k recommendation quality using held-out positive interactions.
@@ -171,11 +215,19 @@ def evaluate_ranking_model(
         train_items = set(train_df.loc[train_df['user'] == user, 'item'].tolist())
         user_test = test_df[test_df['user'] == user]
         relevant_items = user_test.loc[user_test['rating'] >= rating_threshold, 'item'].tolist()
+        
+        if candidate_provider is not None:
+            candidate_items = candidate_provider(user, top_n=candidate_sample_size)
+        else:
+            all_items = set(range(n_items)) - train_items
+            sample_size = min(candidate_sample_size, len(all_items))
+            candidate_items = rng.sample(list(all_items), sample_size) if sample_size > 0 else []
 
-        # candidate_items = [item for item in range(n_items) if item not in train_items]
-        all_items = set(range(n_items)) - train_items
-        sample_size = min(candidate_sample_size, len(all_items))
-        candidate_items = rng.sample(list(all_items), sample_size) if sample_size > 0 else []
+
+        # # candidate_items = [item for item in range(n_items) if item not in train_items]
+        # all_items = set(range(n_items)) - train_items
+        # sample_size = min(candidate_sample_size, len(all_items))
+        # candidate_items = rng.sample(list(all_items), sample_size) if sample_size > 0 else []
         # Always include relevant items
         candidate_items = list(set(candidate_items) | set(relevant_items))
         scored_items = []
